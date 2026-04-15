@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.services.storage_service import AzureStorageService
 from app.services.db_service import insert_page, insert_ocr
+from app.services.embedding_service import generate_embedding
+from app.services.db_service import insert_embedding
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -128,6 +130,7 @@ def run_ocr(file_path: str, document_id: str, doc_id: int, file_type: str):
             tags=tags
         )
 
+        
         docs.append(
             Document(
                 page_content=text,
@@ -156,5 +159,49 @@ def run_ocr(file_path: str, document_id: str, doc_id: int, file_type: str):
                     all_docs.extend(result_docs)
                 except Exception as e:
                     logger.error(f"Error processing page: {e}")
+
+    def _chunk_text(text, size=500, overlap=50):
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + size
+            chunks.append(text[start:end])
+            start += size - overlap
+        return chunks
+
+    logger.info("Starting embedding generation...")
+
+    for doc in all_docs:
+        text = doc.page_content
+        page_num = doc.metadata["page"]
+
+        if not text or not text.strip():
+            continue
+
+        chunks = _chunk_text(text)
+
+        for i, chunk in enumerate(chunks):
+            if not chunk.strip():
+                continue
+
+            try:
+                embedding = generate_embedding(chunk)
+
+                if embedding is None:
+                    continue
+
+                insert_embedding(
+                    id=f"{doc_id}_p{page_num}_c{i}",
+                    document_id=doc_id,
+                    file_name=document_id,
+                    file_type=file_type,
+                    page_number=page_num,
+                    chunk_id=i,
+                    content=chunk,
+                    embedding=embedding
+                )
+
+            except Exception as e:
+                logger.error(f"Embedding failed for page {page_num}, chunk {i}: {e}")
 
     return all_docs

@@ -5,7 +5,6 @@ def create_document(file_name, blob_path, container, file_type):
     conn = get_connection()
     cur = conn.cursor()
 
-    # Check if exists
     cur.execute(
         "SELECT document_id FROM documents WHERE file_name=%s",
         (file_name,)
@@ -128,6 +127,44 @@ def update_page_count(doc_id, page_count):
     cur.execute(
         "UPDATE documents SET page_count=%s WHERE document_id=%s",
         (page_count, doc_id)
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def insert_embedding(
+    id,
+    document_id,
+    file_name,
+    file_type,
+    page_number,
+    chunk_id,
+    content,
+    embedding
+):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO embeddings (
+            id, document_id, file_name, file_type,
+            page_number, chunk_id, content, embedding
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (
+            id,
+            document_id,
+            file_name,
+            file_type,
+            page_number,
+            chunk_id,
+            content,
+            embedding
+        )
     )
 
     conn.commit()

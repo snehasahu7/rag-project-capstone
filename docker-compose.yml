@@ -17,19 +17,19 @@ services:
     restart: on-failure
 
   # ── Streamlit frontend (Member 3's UI) ────────────────────────────────────
-  frontend:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.frontend
-    ports:
-      - "8502:8501"
-    volumes:
-      - ./app:/app/app:cached
-    env_file:
-      - .env
-    depends_on:
-      - api
-    restart: on-failure
+  # frontend:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile.frontend
+  #   ports:
+  #     - "8502:8501"
+  #   volumes:
+  #     - ./app:/app/app:cached
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     - api
+  #   restart: on-failure
 
   # ── PostgreSQL + pgvector ─────────────────────────────────────────────────
   db:

@@ -14,6 +14,13 @@ def init_db():
     """)
 
     # ========================
+    # ENABLE PGVECTOR
+    # ========================
+    cur.execute("""
+    CREATE EXTENSION IF NOT EXISTS vector;
+    """)
+
+    # ========================
     # DOCUMENTS TABLE
     # ========================
     cur.execute("""
@@ -26,6 +33,7 @@ def init_db():
         storage_container TEXT NOT NULL,
 
         uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+        file_type TEXT DEFAULT 'unsupported',
 
         status TEXT NOT NULL CHECK (
             status IN ('pending', 'processing', 'completed', 'failed')
@@ -77,11 +85,47 @@ def init_db():
     );
     """)
 
+    # ========================
+    # EMBEDDINGS TABLE
+    # ========================
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS embeddings (
+        id TEXT PRIMARY KEY,
+
+        document_id UUID NOT NULL,
+        file_name TEXT,
+        file_type TEXT,
+
+        page_number INT,
+        chunk_id INT,
+
+        content TEXT,
+
+        embedding VECTOR(384),
+
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+
+        CONSTRAINT fk_embeddings_document
+        FOREIGN KEY (document_id)
+        REFERENCES documents(document_id)
+        ON DELETE CASCADE
+    );
+    """)
+
+    # ========================
+    # VECTOR INDEX
+    # ========================
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_embeddings_vector
+    ON embeddings
+    USING ivfflat (embedding vector_cosine_ops);
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
 
-    print("✅ Tables created successfully")
+    print("Tables created successfully")
 
 
 if __name__ == "__main__":

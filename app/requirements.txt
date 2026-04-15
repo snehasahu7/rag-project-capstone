@@ -1,7 +1,7 @@
 # ── Member 1 (Rehman) — exact packages from his requirements.txt ──────────────
 azure-storage-blob
-langchain
-langchain-community
+# langchain
+# langchain-community
 langchain-core
 python-dotenv
 pypdf
@@ -14,16 +14,17 @@ fastapi
 uvicorn
 python-multipart
 psycopg2-binary
+sentence-transformers
 
 # ── Member 4 (Karan) — additional packages needed for Docker to work ──────────
 pgvector>=0.2.5
 pydantic-settings>=2.0.0
 
 # ── Member 2 (Farhan) — vector search + RAG ───────────────────────────────────
-openai>=1.30.0
-llama-index>=0.10.40
-llama-index-embeddings-openai>=0.1.9
-llama-index-llms-openai>=0.1.16
+# openai>=1.30.0
+# llama-index>=0.10.40
+# llama-index-embeddings-openai>=0.1.9
+# llama-index-llms-openai>=0.1.16
 
 # ── Member 3 (Sneha) — PDF viewer with highlights ─────────────────────────────
 streamlit>=1.35.0

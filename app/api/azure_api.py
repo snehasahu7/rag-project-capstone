@@ -6,6 +6,9 @@ import os
 from app.services.storage_service import AzureStorageService
 from app.services.ingestion_azure_service import process_single_pdf
 
+
+from app.services.embedding_service import generate_embedding
+
 from app.services.db_service import (
     create_document,
     update_status,
