@@ -5,7 +5,11 @@ import os
 
 from app.services.storage_service import AzureStorageService
 from app.services.ingestion_azure_service import process_single_pdf
-
+# #Farhan's c
+from pydantic import BaseModel
+from typing import Optional, List
+from app.services.retrieval_service import hybrid_search
+from app.services.chat_service import chat, clear_history
 
 from app.services.embedding_service import generate_embedding
 
@@ -19,7 +23,13 @@ from app.core.config import settings
 
 app = FastAPI()
 storage = AzureStorageService()
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = "default_session"
 
+class SearchRequest(BaseModel):
+    query: str
+    top_k: Optional[int] = 5
 
 # ========================
 # 📤 UPLOAD + OCR
@@ -129,3 +139,37 @@ def download_pdf(blob_path: str):
             "Content-Length": str(props.size)
         }
     )
+
+# ========================
+# 🔍 SEARCH (Member 2)
+# ========================
+@app.post("/search")
+async def search_documents(request: SearchRequest):
+    """
+    Exposes the Hybrid Search (BM25 + HNSW).
+    """
+    results = hybrid_search(query=request.query, top_k=request.top_k)
+    return {"results": results}
+
+# ========================
+# 💬 CHAT (Member 2)
+# ========================
+@app.post("/chat")
+async def chat_with_docs(request: ChatRequest):
+    """
+    RAG Pipeline: Retrieves context and generates answer using Llama.
+    """
+    try:
+        response = chat(
+            user_message=request.message, 
+            conversation_id=request.conversation_id
+        )
+        return response
+    except Exception as e:
+        # Useful for debugging if Ollama isn't running
+        return {"error": str(e), "detail": "Check if Llama/Ollama is running locally"}
+
+@app.delete("/chat/history/{conversation_id}")
+async def reset_chat(conversation_id: str):
+    clear_history(conversation_id)
+    return {"message": f"History for {conversation_id} cleared."}
