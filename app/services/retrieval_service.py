@@ -74,7 +74,6 @@ def _bm25_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedCh
             content,
             ts_rank_cd(content_tsv, plainto_tsquery('english', %s)) AS bm25_score
         FROM embeddings
-        WHERE content_tsv @@ plainto_tsquery('english', %s)
         ORDER BY bm25_score DESC
         LIMIT %s;
     """
@@ -82,7 +81,7 @@ def _bm25_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedCh
     try:
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute(sql, (query, query, top_k))
+        cur.execute(sql, (query, top_k))
         rows = cur.fetchall()
         cur.close()
         conn.close()

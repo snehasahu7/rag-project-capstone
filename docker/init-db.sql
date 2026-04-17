@@ -1,5 +1,5 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- Intelligent Document Explorer — Full DB Init (Production Ready)
+-- Intelligent Document Explorer — Full DB Init (Production Ready, Idempotent)
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- ========================
@@ -38,14 +38,17 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS pages (
     id              SERIAL PRIMARY KEY,
     document_id     UUID NOT NULL,
-    page_number     INT,
+    page_number     INT NOT NULL,
     page_blob_path  TEXT,
     local_path      TEXT,
 
     CONSTRAINT fk_pages_document
         FOREIGN KEY (document_id)
         REFERENCES documents(document_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    -- ✅ Prevent duplicate pages
+    CONSTRAINT unique_page_per_doc UNIQUE (document_id, page_number)
 );
 
 -- ========================
@@ -54,7 +57,7 @@ CREATE TABLE IF NOT EXISTS pages (
 CREATE TABLE IF NOT EXISTS ocr_results (
     id          SERIAL PRIMARY KEY,
     document_id UUID NOT NULL,
-    page_number INT,
+    page_number INT NOT NULL,
     content     TEXT,
     tags        TEXT[],
     bbox        JSONB,
@@ -64,7 +67,10 @@ CREATE TABLE IF NOT EXISTS ocr_results (
     CONSTRAINT fk_ocr_document
         FOREIGN KEY (document_id)
         REFERENCES documents(document_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    -- ✅ Prevent duplicate OCR per page
+    CONSTRAINT unique_ocr_per_page UNIQUE (document_id, page_number)
 );
 
 -- ========================
@@ -77,8 +83,8 @@ CREATE TABLE IF NOT EXISTS embeddings (
     file_name TEXT,
     file_type TEXT,
 
-    page_number INT,
-    chunk_id INT,
+    page_number INT NOT NULL,
+    chunk_id INT NOT NULL,
 
     content TEXT,
 
@@ -93,7 +99,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
     CONSTRAINT fk_embeddings_document
         FOREIGN KEY (document_id)
         REFERENCES documents(document_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    -- ✅ Prevent duplicate chunks
+    CONSTRAINT unique_chunk_per_page UNIQUE (document_id, page_number, chunk_id)
 );
 
 -- ========================
@@ -137,6 +146,10 @@ CREATE INDEX IF NOT EXISTS idx_ocr_document_id
 CREATE INDEX IF NOT EXISTS idx_embeddings_document_id
     ON embeddings (document_id);
 
+-- ✅ Composite index for better filtering
+CREATE INDEX IF NOT EXISTS idx_embeddings_doc_page
+    ON embeddings (document_id, page_number);
+
 -- ========================
 -- BM25 INDEX (GIN)
 -- ========================
@@ -148,7 +161,11 @@ ON embeddings USING GIN(content_tsv);
 -- ========================
 CREATE INDEX IF NOT EXISTS idx_embeddings_hnsw
 ON embeddings
-USING hnsw (embedding vector_cosine_ops);
+USING hnsw (embedding vector_cosine_ops)
+WITH (
+    m = 16,
+    ef_construction = 64
+);
 
 -- ========================
 -- ANALYZE (IMPORTANT)

@@ -5,7 +5,7 @@ import os
 
 from app.services.storage_service import AzureStorageService
 from app.services.ingestion_azure_service import process_single_pdf
-# #Farhan's c
+
 from pydantic import BaseModel
 from typing import Optional, List
 from app.services.retrieval_service import hybrid_search
@@ -54,12 +54,17 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     blob_name = storage.upload_file(temp_path, file_type=file_type)
 
-    doc_id = create_document(
+    doc_id, exists = create_document(
     file_name=file.filename,
     blob_path=blob_name,
     container=settings.AZURE_STORAGE_CONTAINER,
     file_type=file_type 
 )
+    if exists:
+        return {
+            "message": "Document already processed",
+            "document_id": doc_id
+        }
 
     update_status(doc_id, "processing")
 

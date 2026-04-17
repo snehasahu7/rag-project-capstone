@@ -6,17 +6,23 @@ def create_document(file_name, blob_path, container, file_type):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT document_id FROM documents WHERE file_name=%s",
+        "SELECT document_id, status FROM documents WHERE file_name=%s",
         (file_name,)
     )
     result = cur.fetchone()
 
     if result:
-        doc_id = result[0]
+        doc_id, status = result
 
+        # ✅ If already processed → skip
+        if status == "completed":
+            cur.close()
+            conn.close()
+            return doc_id, True   # <-- already exists
 
+        # else continue processing (failed / partial)
         cur.execute(
-        """
+            """
             UPDATE documents
             SET blob_path=%s,
                 storage_container=%s,
@@ -28,17 +34,7 @@ def create_document(file_name, blob_path, container, file_type):
             (blob_path, container, file_type, "pending", doc_id)
         )
 
-        cur.execute(
-            "DELETE FROM ocr_results WHERE document_id=%s",
-            (doc_id,)
-        )
-        cur.execute(
-            "DELETE FROM pages WHERE document_id=%s",
-            (doc_id,)
-        )
-
     else:
-
         cur.execute(
             """
             INSERT INTO documents (
@@ -60,7 +56,7 @@ def create_document(file_name, blob_path, container, file_type):
     cur.close()
     conn.close()
 
-    return doc_id
+    return doc_id, False
 
 
 def update_status(doc_id, status):
@@ -90,6 +86,7 @@ def insert_page(document_id, page_number, page_blob_path, local_path):
             local_path
         )
         VALUES (%s, %s, %s, %s)
+        ON CONFLICT (document_id, page_number) DO NOTHING
         """,
         (document_id, page_number, page_blob_path, local_path)
     )
@@ -112,6 +109,7 @@ def insert_ocr(document_id, page_number, content, tags):
             tags
         )
         VALUES (%s, %s, %s, %s)
+        ON CONFLICT (document_id, page_number) DO NOTHING
         """,
         (document_id, page_number, content, tags)
     )
@@ -153,7 +151,7 @@ def insert_embedding(
             page_number, chunk_id, content, embedding
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (document_id, page_number, chunk_id) DO NOTHING
         """,
         (
             id,
