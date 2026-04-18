@@ -229,7 +229,7 @@ class HuggingFaceLLMClient(LLMClient):
                 model=model_name,
                 max_new_tokens=512,
                 do_sample=True,
-                temperature=0.7,
+                temperature=0.1,
             )
             logger.info(f"HuggingFaceLLMClient loaded model: {model_name}")
         except Exception as exc:
@@ -282,32 +282,48 @@ def _get_llm() -> LLMClient:
 
 
 # ── RAG system prompt ─────────────────────────────────────────────────────────
-
 _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""\
-    You are an intelligent document assistant. Your job is to answer the user's
-    question accurately and concisely using ONLY the provided document context.
+    You are a precise and intelligent document assistant.
+    Your job is to answer the user's question using ONLY the provided context.
 
-    Rules:
-    - Base your answer exclusively on the context below.
-    - If the context does not contain enough information, say so honestly.
-    - Cite the source (filename + page number) when referencing specific facts.
-    - Do not hallucinate or invent information not present in the context.
-    - Be concise; prefer short, clear answers.
+    ====================
+    STRICT RULES
+    ====================
+    1. Do NOT copy or dump the context or repeat full paragraphs.
+    2. Use ONLY the definitions provided in the clauses. Do not use outside knowledge.
+    3. Summarize and synthesize information into a clean, final answer.
+    4. Only use the MOST relevant parts of the context; ignore irrelevant text.
+    5. Do NOT hallucinate. If the answer is not in the context, say: "The provided documents do not contain sufficient information."
+    6. CITATIONS: Always cite sources inline exactly as they appear in the context headers, e.g., ([Source 1]).
+    7. NO CHATTER: Do not mention "Source X says" or "Based on the documents" in your prose.
+    8. FORMATTING: Return plain text with standard line breaks. Do not return raw JSON escape characters like \\n or \\".
+    9. Use ONLY the MOST relevant parts of the context; ignore unrelated chunks completely.
+    10. - If multiple chunks conflict, prefer the most specific one.                                      
 
-    --- DOCUMENT CONTEXT ---
+    ====================
+    ANSWER FORMAT
+    ====================
+    - Start directly with the answer (no intro or "Okay, here is the answer").
+    - Be concise and professional.
+    - Use bullet points ONLY if helpful for lists.
+
+    ====================
+    DOCUMENT CONTEXT
+    ====================
     {context}
-    --- END OF CONTEXT ---
+    ====================
+    END OF CONTEXT
+    ====================
 """)
-
 
 # ── Public chat API ───────────────────────────────────────────────────────────
 
 def chat(
     user_message: str,
     conversation_id: str = "default",
-    top_k: int = 5,
-    bm25_weight: float = 0.4,
-    hnsw_weight: float = 0.6,
+    top_k: int = 3,
+    bm25_weight: float = 0.2,
+    hnsw_weight: float = 0.8,
 ) -> ChatResponse:
     """
     Full RAG pipeline:

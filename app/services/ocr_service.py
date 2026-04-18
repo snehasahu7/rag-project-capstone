@@ -47,7 +47,9 @@ def split_pdf(file_path: str):
 def clean_text(text: str):
     text = text.lower()
     text = text.replace("<figure>", "").replace("</figure>", "")
-    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+
+    text = re.sub(r'[^a-z0-9\s\.\,\%\$\-\:\/]', ' ', text)
+
     return " ".join(text.split())
 
 
@@ -63,89 +65,94 @@ def run_ocr(file_path: str, document_id: str, doc_id: int, file_type: str):
     BATCH_SIZE = 3
 
     def process_page(page_tuple):
-        page_path, page_num = page_tuple
+        try:
 
-        logger.info(f"OCR on page {page_num}")
+            page_path, page_num = page_tuple
 
-        blob_path = storage.upload_page_pdf(
-            local_path=page_path,
-            document_name=document_id,
-            page_num=page_num,
-            file_type=file_type
-        )
+            logger.info(f"OCR on page {page_num}")
 
-        logger.info("Opening file...")
-
-        with open(page_path, "rb") as f:
-            logger.info(f"Sending OCR request for page {page_num}...")
-            poller = client.begin_analyze_document(
-                "prebuilt-read",
-                body=f
+            blob_path = storage.upload_page_pdf(
+                local_path=page_path,
+                document_name=document_id,
+                page_num=page_num,
+                file_type=file_type
             )
 
-        logger.info(f"Waiting for OCR result for page {page_num}...")
+            logger.info("Opening file...")
 
-        result = poller.result()
+            with open(page_path, "rb") as f:
+                logger.info(f"Sending OCR request for page {page_num}...")
+                poller = client.begin_analyze_document(
+                    "prebuilt-read",
+                    body=f
+                )
 
-        logger.info(f"OCR completed for page {page_num}")
+            logger.info(f"Waiting for OCR result for page {page_num}...")
 
-        insert_page(
-            document_id=doc_id,
-            page_number=page_num,
-            page_blob_path=blob_path,
-            local_path=page_path
-        )
+            result = poller.result()
 
-        docs = []
-        full_text = ""
+            logger.info(f"OCR completed for page {page_num}")
 
-        try:
-            if not result or not result.pages:
-                logger.warning(f"No OCR pages returned for page {page_num}")
-            else:
-                for page in result.pages:
-                    if not page:
-                        continue
+            insert_page(
+                document_id=doc_id,
+                page_number=page_num,
+                page_blob_path=blob_path,
+                local_path=page_path
+            )
 
-                    lines = getattr(page, "lines", None)
-                    if not lines:
-                        continue
-
-                    for line in lines:
-                        if line and getattr(line, "content", None):
-                            full_text += line.content + " "
-
-        except Exception as e:
-            logger.error(f"Text extraction failed for page {page_num}: {e}")
+            docs = []
             full_text = ""
 
-        text = clean_text(full_text) if full_text else ""
+            try:
+                if not result or not result.pages:
+                    logger.warning(f"No OCR pages returned for page {page_num}")
+                else:
+                    for page in result.pages:
+                        if not page:
+                            continue
 
-        if not text:
-            logger.warning(f"Empty OCR text for page {page_num}")
-        tags = ["general"]
+                        lines = getattr(page, "lines", None)
+                        if not lines:
+                            continue
 
-        insert_ocr(
-            document_id=doc_id,
-            page_number=page_num,
-            content=text,
-            tags=tags
-        )
+                        for line in lines:
+                            if line and getattr(line, "content", None):
+                                full_text += line.content + " "
 
-        
-        docs.append(
-            Document(
-                page_content=text,
-                metadata={
-                    "document_id": document_id,
-                    "source": document_id,
-                    "page": page_num,
-                    "tags": tags
-                }
+            except Exception as e:
+                logger.error(f"Text extraction failed for page {page_num}: {e}")
+                full_text = ""
+
+            text = clean_text(full_text) if full_text else ""
+
+            if not text:
+                logger.warning(f"Empty OCR text for page {page_num}")
+            tags = ["general"]
+
+            insert_ocr(
+                document_id=doc_id,
+                page_number=page_num,
+                content=text,
+                tags=tags
             )
-        )
 
-        return docs
+            
+            docs.append(
+                Document(
+                    page_content=text,
+                    metadata={
+                        "document_id": document_id,
+                        "source": document_id,
+                        "page": page_num,
+                        "tags": tags
+                    }
+                )
+            )
+
+            return docs
+        finally:
+            if os.path.exists(page_path):
+                os.remove(page_path)
 
     for i in range(0, len(page_files), BATCH_SIZE):
         batch = page_files[i:i + BATCH_SIZE]
@@ -162,13 +169,22 @@ def run_ocr(file_path: str, document_id: str, doc_id: int, file_type: str):
                 except Exception as e:
                     logger.error(f"Error processing page: {e}")
 
-    def _chunk_text(text, size=500, overlap=50):
+    def _chunk_text(text, size=1000, overlap=150):
         chunks = []
-        start = 0
-        while start < len(text):
-            end = start + size
-            chunks.append(text[start:end])
-            start += size - overlap
+        paragraphs = text.split("\n")
+
+        current = ""
+
+        for para in paragraphs:
+            if len(current) + len(para) < size:
+                current += " " + para
+            else:
+                chunks.append(current.strip())
+                current = para
+
+        if current:
+            chunks.append(current.strip())
+
         return chunks
 
     logger.info("Starting embedding generation...")

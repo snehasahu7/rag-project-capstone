@@ -25,15 +25,18 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.db.db import get_connection
+from app.db.db import Database
 from app.services.embedding_service import generate_embedding
+from app.services.re_ranker_service import rerank
+
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
 # ── Tuning knobs (can be overridden per call) ─────────────────────────────────
 DEFAULT_TOP_K: int = 5
-DEFAULT_BM25_WEIGHT: float = 0.4   # α  — weight for BM25 rank contribution
-DEFAULT_HNSW_WEIGHT: float = 0.6   # β  — weight for HNSW rank contribution
+DEFAULT_BM25_WEIGHT: float = 0.2   # α  — weight for BM25 rank contribution
+DEFAULT_HNSW_WEIGHT: float = 0.8   # β  — weight for HNSW rank contribution
 RRF_K: int = 60                     # RRF constant (60 is the standard default)
 
 
@@ -57,10 +60,6 @@ class RetrievedChunk:
 # ── BM25 retrieval (PostgreSQL full-text search) ──────────────────────────────
 
 def _bm25_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedChunk]:
-    """
-    Use PostgreSQL's tsvector + tsquery full-text search (GIN-indexed).
-    Returns up to *top_k* rows ordered by ts_rank_cd descending.
-    """
     if not query or not query.strip():
         return []
 
@@ -78,41 +77,36 @@ def _bm25_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedCh
         LIMIT %s;
     """
 
+    conn = Database.get_connection()
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(sql, (query, top_k))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        with conn.cursor() as cur:
+            cur.execute(sql, (query, top_k))
+            rows = cur.fetchall()
     except Exception as exc:
         logger.error(f"BM25 search failed: {exc}")
         return []
+    finally:
+        Database.return_connection(conn)
 
     results = []
     for row in rows:
-        chunk = RetrievedChunk(
-            id=row[0],
-            document_id=row[1],
-            file_name=row[2] or "",
-            page_number=row[3] or 0,
-            chunk_id=row[4] or 0,
-            content=row[5] or "",
+        results.append(
+            RetrievedChunk(
+                id=row[0],
+                document_id=row[1],
+                file_name=row[2] or "",
+                page_number=row[3] or 0,
+                chunk_id=row[4] or 0,
+                content=row[5] or "",
+            )
         )
-        results.append(chunk)
 
-    logger.debug(f"BM25 returned {len(results)} results for query: {query[:60]}")
     return results
 
 
 # ── HNSW retrieval (pgvector cosine similarity) ───────────────────────────────
 
 def _hnsw_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedChunk]:
-    """
-    Encode the query with all-MiniLM-L6-v2 and run HNSW ANN search via
-    pgvector's <=> cosine-distance operator (HNSW index on embeddings table).
-    Returns up to *top_k* rows ordered by cosine similarity descending.
-    """
     if not query or not query.strip():
         return []
 
@@ -121,7 +115,6 @@ def _hnsw_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedCh
         logger.warning("HNSW search skipped: could not generate query embedding")
         return []
 
-    # pgvector expects a string like '[0.1, 0.2, ...]'
     vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     sql = """
@@ -139,32 +132,31 @@ def _hnsw_search(query: str, top_k: int = DEFAULT_TOP_K * 2) -> list[RetrievedCh
         LIMIT %s;
     """
 
+    conn = Database.get_connection()
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(sql, (vec_str, vec_str, top_k))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        with conn.cursor() as cur:
+            cur.execute(sql, (vec_str, vec_str, top_k))
+            rows = cur.fetchall()
     except Exception as exc:
         logger.error(f"HNSW search failed: {exc}")
         return []
+    finally:
+        Database.return_connection(conn)
 
     results = []
     for row in rows:
-        chunk = RetrievedChunk(
-            id=row[0],
-            document_id=row[1],
-            file_name=row[2] or "",
-            page_number=row[3] or 0,
-            chunk_id=row[4] or 0,
-            content=row[5] or "",
+        results.append(
+            RetrievedChunk(
+                id=row[0],
+                document_id=row[1],
+                file_name=row[2] or "",
+                page_number=row[3] or 0,
+                chunk_id=row[4] or 0,
+                content=row[5] or "",
+            )
         )
-        results.append(chunk)
 
-    logger.debug(f"HNSW returned {len(results)} results for query: {query[:60]}")
     return results
-
 
 # ── Reciprocal Rank Fusion ────────────────────────────────────────────────────
 
@@ -204,6 +196,41 @@ def _reciprocal_rank_fusion(
     fused = sorted(merged.values(), key=lambda c: c.rrf_score, reverse=True)
     return fused
 
+def normalize_query(q: str):
+    return q.lower().replace("-", " ")
+
+
+def _get_adjacent_chunks(chunk):
+    conn = Database.get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, document_id::text, file_name, page_number, chunk_id, content
+                FROM embeddings
+                WHERE document_id = %s
+                  AND page_number = %s
+                  AND chunk_id BETWEEN %s AND %s
+                ORDER BY chunk_id
+                """,
+                (
+                    chunk.document_id,
+                    chunk.page_number,
+                    chunk.chunk_id - 1,
+                    chunk.chunk_id + 1
+                )
+            )
+            rows = cur.fetchall()
+
+            return [
+                RetrievedChunk(
+                    id=r[0], document_id=r[1], file_name=r[2] or "",
+                    page_number=r[3] or 0, chunk_id=r[4], content=r[5] or ""
+                )
+                for r in rows
+            ]
+    finally:
+        Database.return_connection(conn)
 
 # ── Public hybrid search entry point ─────────────────────────────────────────
 
@@ -235,8 +262,16 @@ def hybrid_search(
     # Fetch a wider pool from each leg so fusion has enough candidates
     pool = top_k * 3
 
-    bm25_results = _bm25_search(query, top_k=pool)
-    hnsw_results = _hnsw_search(query, top_k=pool)
+    raw_query = query
+    normalized_query = normalize_query(query)
+
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        bm25_future = executor.submit(_bm25_search, normalized_query, pool)
+        hnsw_future = executor.submit(_hnsw_search, raw_query, pool)
+
+        bm25_results = bm25_future.result()
+        hnsw_results = hnsw_future.result()
 
     fused = _reciprocal_rank_fusion(
         bm25_results,
@@ -245,7 +280,21 @@ def hybrid_search(
         hnsw_weight=hnsw_weight,
     )
 
-    final = fused[:top_k]
+    reranked = rerank(query, fused[:top_k * 3])
+    print("Re-ranked"*20,reranked)
+
+    expanded = []
+
+    for chunk in reranked[:top_k]:
+        neighbors = _get_adjacent_chunks(chunk)
+        merged_text = " ".join([c.content for c in neighbors])
+
+        chunk.content = merged_text
+        expanded.append(chunk)
+
+    final = expanded
+    print("Re-ranked"*20,final)
+
     logger.info(
         f"hybrid_search: query='{query[:60]}' | "
         f"bm25={len(bm25_results)} hnsw={len(hnsw_results)} fused={len(fused)} returned={len(final)}"

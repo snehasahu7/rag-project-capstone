@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
+from app.db.db import Database
 from pypdf import PdfReader
 import os
 
@@ -31,9 +32,23 @@ class SearchRequest(BaseModel):
     query: str
     top_k: Optional[int] = 5
 
+
+
+@app.on_event("startup")
+def startup():
+    Database.initialize()
+
+
+@app.on_event("shutdown")
+def shutdown():
+    Database.close_all()
+
+
 # ========================
 # 📤 UPLOAD + OCR
 # ========================
+import os
+
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     temp_path = f"/tmp/{file.filename}"
@@ -41,51 +56,59 @@ async def upload_pdf(file: UploadFile = File(...)):
     with open(temp_path, "wb") as f:
         f.write(await file.read())
 
-    file_ext = file.filename.split(".")[-1].lower()
-
-    if file_ext == "pdf":
-        file_type = "pdf"
-    elif file_ext in ["png", "jpg", "jpeg"]:
-        file_type = "image"
-    elif file_ext == "csv":
-        file_type = "csv"
-    else:
-        raise ValueError("Unsupported file type")
-
-    blob_name = storage.upload_file(temp_path, file_type=file_type)
-
-    doc_id, exists = create_document(
-    file_name=file.filename,
-    blob_path=blob_name,
-    container=settings.AZURE_STORAGE_CONTAINER,
-    file_type=file_type 
-)
-    if exists:
-        return {
-            "message": "Document already processed",
-            "document_id": doc_id
-        }
-
-    update_status(doc_id, "processing")
-
     try:
+        file_ext = file.filename.split(".")[-1].lower()
+
+        if file_ext == "pdf":
+            file_type = "pdf"
+        elif file_ext in ["png", "jpg", "jpeg"]:
+            file_type = "image"
+        elif file_ext == "csv":
+            file_type = "csv"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {file_ext}. Accepted: pdf, png, jpg, jpeg, csv"
+            )
+
+        blob_name = storage.upload_file(temp_path, file_type=file_type)
+
+        doc_id, exists = create_document(
+            file_name=file.filename,
+            blob_path=blob_name,
+            container=settings.AZURE_STORAGE_CONTAINER,
+            file_type=file_type 
+        )
+
+        if exists:
+            return {
+                "message": "Document already processed",
+                "document_id": doc_id
+            }
+
+        update_status(doc_id, "processing")
+
         docs = process_single_pdf(temp_path, blob_name, doc_id, file_type)
 
         reader = PdfReader(temp_path)
         page_count = len(reader.pages)
+
         update_page_count(doc_id, page_count)
         update_status(doc_id, "completed")
+
+        return {
+            "message": "uploaded + processed",
+            "file": blob_name,
+            "pages": len(docs)
+        }
 
     except Exception as e:
         update_status(doc_id, "failed")
         raise
 
-    return {
-        "message": "uploaded + processed",
-        "file": blob_name,
-        "pages": len(docs)
-    }
-
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 # ========================
 # 📥 LIST PDFs
