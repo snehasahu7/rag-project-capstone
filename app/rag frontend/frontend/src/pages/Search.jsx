@@ -16,25 +16,59 @@ export default function Search() {
     setResults(null);
 
     try {
-      const res = await fetch("/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: query, search_type: searchType, top_k: 5 }), 
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const mappedResults = (data.results || []).map((r, i) => ({
-          id: r.id || i,
-          title: r.file_name ? r.file_name.split('/').pop() : `Result ${i+1}`,
-          document: r.file_name || "Unknown",
-          page: r.page_number || "N/A",
-          chunk: r.chunk_id || "N/A",
-          snippet: r.content || "No content available",
-          relevance: r.rrf_score || r.score || 0.0
-        }));
-        setResults(mappedResults);
+      if (searchType === "title") {
+        // If searching by title, the backend vector search only supports content.
+        // We will fetch all documents and filter by filename on the frontend.
+        const res = await fetch("/pdfs");
+        if (res.ok) {
+          const allDocs = await res.json();
+          const filtered = allDocs.filter(doc => doc.toLowerCase().includes(query.toLowerCase()));
+          
+          setResults(filtered.map((doc, i) => ({
+            id: `title_${i}`,
+            title: doc.split('/').pop(),
+            document: doc,
+            page: "1",
+            chunk: "N/A",
+            snippet: "Matched by filename",
+            relevance: 1.0
+          })));
+        } else {
+          setResults([]);
+        }
       } else {
-        setResults([]);
+        // Semantic search using the backend API
+        // Do NOT pass search_type to backend since it may cause Pydantic to ignore the query or throw 422
+        const res = await fetch("/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: query, top_k: 5 }), 
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          
+          // Handle both {"results": [...]} and [...] response formats safely
+          let resultsArray = [];
+          if (Array.isArray(data)) {
+            resultsArray = data;
+          } else if (data && Array.isArray(data.results)) {
+            resultsArray = data.results;
+          }
+          
+          const mappedResults = resultsArray.map((r, i) => ({
+            id: r.id || i,
+            title: r.file_name ? r.file_name.split('/').pop() : `Result ${i+1}`,
+            document: r.file_name || "Unknown",
+            page: r.page_number || "N/A",
+            chunk: r.chunk_id || "N/A",
+            snippet: r.content || "No content available",
+            relevance: r.rrf_score || r.score || 0.0
+          }));
+          setResults(mappedResults);
+        } else {
+          setResults([]);
+        }
       }
     } catch (err) {
       console.error("Search API failed", err);
